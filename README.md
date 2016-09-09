@@ -1,0 +1,1 @@
+一个将请求转发给Google DNS的DNS Server

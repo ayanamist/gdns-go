@@ -12,15 +12,15 @@ import (
 )
 
 const (
-	GoogleDNS  = "8.8.8.8:53"
+	AliDNS     = "223.5.5.5:53"
 	DNSTimeout = 2 * time.Second
 )
 
 var (
-	myIP *MyIP
-
-	backupUpstream = &TcpUdpUpstream{
-		NameServer: GoogleDNS,
+	myIP                *MyIP
+	possibleLoopDomains = []string{GoogleDnsHttpsDomain}
+	fallbackUpstream    = &TcpUdpUpstream{
+		NameServer: AliDNS,
 		Network:    "udp",
 		Dial: (&net.Dialer{
 			Timeout: DNSTimeout,
@@ -60,8 +60,11 @@ func (h *MyHandler) determineRoute(domain string) (u Upstream) {
 		domain = domain[:len(domain)-1]
 	}
 	avoidLoop := false
-	if domain == GoogleDnsHttpsDomain {
-		avoidLoop = true
+	for _, d := range possibleLoopDomains {
+		if domain == d {
+			avoidLoop = true
+			break
+		}
 	}
 	var ok bool
 	for domain != "" {
@@ -80,7 +83,7 @@ func (h *MyHandler) determineRoute(domain string) (u Upstream) {
 	}
 	if avoidLoop {
 		if _, ok = u.(*GoogleHttpsUpstream); ok {
-			u = backupUpstream
+			u = fallbackUpstream
 		}
 	}
 	return

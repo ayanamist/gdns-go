@@ -12,6 +12,7 @@ import (
 const TaobaoIpURL = "http://ip.taobao.com/service/getIpInfo.php?ip=myip"
 
 type MyIP struct {
+	Client *http.Client
 	sync.RWMutex
 	ip net.IP
 }
@@ -21,7 +22,11 @@ func (m *MyIP) Refresh() error {
 	if err != nil {
 		return err
 	}
-	resp, err := httpClient.Do(req)
+	client := m.Client
+	if client == nil {
+		client = http.DefaultClient
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}

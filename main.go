@@ -12,12 +12,20 @@ import (
 )
 
 const (
-	GoogleDNS = "8.8.8.8:53"
+	GoogleDNS  = "8.8.8.8:53"
+	DNSTimeout = 2 * time.Second
 )
 
 var (
-	httpClient *http.Client
-	myIP       *MyIP
+	myIP *MyIP
+
+	backupUpstream = &TcpUdpUpstream{
+		NameServer: GoogleDNS,
+		Network:    "udp",
+		Dial: (&net.Dialer{
+			Timeout: DNSTimeout,
+		}).Dial,
+	}
 )
 
 type MyHandler struct {
@@ -47,14 +55,19 @@ func appendEdns0Subnet(m *dns.Msg) {
 	m.Extra = append(m.Extra, o)
 }
 
-func (h *MyHandler) determineRoute(domain string) Upstream {
+func (h *MyHandler) determineRoute(domain string) (u Upstream) {
 	for domain != "" && domain[len(domain)-1] == '.' {
 		domain = domain[:len(domain)-1]
 	}
+	avoidLoop := false
+	if domain == GoogleDnsHttpsDomain {
+		avoidLoop = true
+	}
+	var ok bool
 	for domain != "" {
-		u, ok := h.upstreamMap[domain]
+		u, ok = h.upstreamMap[domain]
 		if ok {
-			return u
+			break
 		}
 		idx := strings.IndexByte(domain, '.')
 		if idx < 0 {
@@ -62,7 +75,15 @@ func (h *MyHandler) determineRoute(domain string) Upstream {
 		}
 		domain = domain[idx+1:]
 	}
-	return h.upstreamMap[""]
+	if u == nil {
+		u = h.upstreamMap[""]
+	}
+	if avoidLoop {
+		if _, ok = u.(*GoogleHttpsUpstream); ok {
+			u = backupUpstream
+		}
+	}
+	return
 }
 
 func (h *MyHandler) ServeDNS(w dns.ResponseWriter, reqMsg *dns.Msg) {
@@ -82,8 +103,9 @@ func (h *MyHandler) ServeDNS(w dns.ResponseWriter, reqMsg *dns.Msg) {
 
 		m := reqMsg.Copy()
 		m.Question = m.Question[i : i+1]
+		log.Printf("%s#%d %d/%d query %v, class=%s, type=%s => %s", w.RemoteAddr(), reqMsg.Id, i+1, len(reqMsg.Question), q.Name, cls, typ, up.Name())
 		respMsg, rtt, err := up.Exchange(m)
-		log.Printf("%s#%d %d/%d query %v, class=%s, type=%s => %s, rtt=%dms", w.RemoteAddr(), reqMsg.Id, i, len(reqMsg.Question), q.Name, cls, typ, up.Name(), rtt/1e6)
+		log.Printf("%s#%d %d/%d rtt=%dms", w.RemoteAddr(), reqMsg.Id, i+1, len(reqMsg.Question), rtt/1e6)
 
 		if err != nil {
 			log.Printf("Exchange: %v", err)
@@ -98,19 +120,19 @@ func (h *MyHandler) ServeDNS(w dns.ResponseWriter, reqMsg *dns.Msg) {
 
 func init() {
 	log.SetOutput(os.Stdout)
-	httpClient = &http.Client{
-		Transport: &http.Transport{
-			Dial: (&net.Dialer{
-				Timeout:   3 * time.Second,
-				KeepAlive: 30 * time.Second,
-			}).Dial,
-			ResponseHeaderTimeout: 10 * time.Second,
-		},
-		Timeout: 30 * time.Second,
-	}
 	myIP = &MyIP{
-		ip: net.IP{127, 0, 0, 1},
+		Client: &http.Client{
+			Transport: &http.Transport{
+				Dial: (&net.Dialer{
+					Timeout: 3 * time.Second,
+				}).Dial,
+				ResponseHeaderTimeout: 30 * time.Second,
+				IdleConnTimeout:       30 * time.Second,
+			},
+			Timeout: 30 * time.Second,
+		},
 	}
+	myIP.SetIP(net.IP{127, 0, 0, 1})
 }
 
 func main() {
@@ -130,8 +152,17 @@ func main() {
 		}
 	}()
 	upstreamMap := make(map[string]Upstream)
-	upstreamMap[""] = &UdpUpstream{
-		NameServer: GoogleDNS,
+	upstreamMap[""] = &GoogleHttpsUpstream{
+		Client: &http.Client{
+			Transport: &http.Transport{
+				Dial: (&net.Dialer{
+					Timeout:   2 * time.Second,
+					KeepAlive: 300 * time.Second,
+				}).Dial,
+				ResponseHeaderTimeout: 2 * time.Second,
+			},
+			Timeout: 2 * time.Second,
+		},
 	}
 	server := &dns.Server{
 		Addr: "127.0.0.1:53",

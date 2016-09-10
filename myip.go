@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net"
+	"net/http"
 	"sync"
 )
 
@@ -16,11 +17,18 @@ type MyIP struct {
 }
 
 func (m *MyIP) Refresh() error {
-	resp, err := httpClient.Get(TaobaoIpURL)
+	req, err := http.NewRequest(http.MethodGet, TaobaoIpURL, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("unexpected status: %v", resp.Status)
+	}
 	respBytes, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
 		return err
@@ -31,11 +39,8 @@ func (m *MyIP) Refresh() error {
 			IP string `json:"ip"`
 		} `json:"data"`
 	}{}
-	if err := json.Unmarshal(respBytes, &tbRes); err != nil {
-		return err
-	}
-	if tbRes.Data.IP == "" {
-		return fmt.Errorf("unexpected result: %s", string(respBytes))
+	if err := json.Unmarshal(respBytes, &tbRes); err != nil || tbRes.Data.IP == "" {
+		return fmt.Errorf("unexpected result, error=%v: %s", err, string(respBytes))
 	}
 	ip := net.ParseIP(tbRes.Data.IP)
 	if ip == nil {

@@ -5,9 +5,14 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/miekg/dns"
+)
+
+const (
+	GoogleDNS = "8.8.8.8:53"
 )
 
 var (
@@ -16,15 +21,78 @@ var (
 )
 
 type MyHandler struct {
-	upstream *UpStreamDNS
+	upstreamMap map[string]Upstream
 }
 
-func (h *MyHandler) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
-	resMsg, err := h.upstream.Query(r)
-	if err != nil {
-		log.Printf("query: %v", err)
+func appendEdns0Subnet(m *dns.Msg) {
+	addr := myIP.GetIP()
+	if addr.IsLoopback() {
+		return
+	}
+	o := new(dns.OPT)
+	o.Hdr.Name = "."
+	o.Hdr.Rrtype = dns.TypeOPT
+	e := new(dns.EDNS0_SUBNET)
+	e.Code = dns.EDNS0SUBNET
+	e.SourceScope = 0
+	e.Address = addr
+	if e.Address.To4() == nil {
+		e.Family = 2 // IP6
+		e.SourceNetmask = net.IPv6len * 8
 	} else {
-		w.WriteMsg(resMsg)
+		e.Family = 1 // IP4
+		e.SourceNetmask = net.IPv4len * 8
+	}
+	o.Option = append(o.Option, e)
+	m.Extra = append(m.Extra, o)
+}
+
+func (h *MyHandler) determineRoute(domain string) Upstream {
+	for domain != "" && domain[len(domain)-1] == '.' {
+		domain = domain[:len(domain)-1]
+	}
+	for domain != "" {
+		u, ok := h.upstreamMap[domain]
+		if ok {
+			return u
+		}
+		idx := strings.IndexByte(domain, '.')
+		if idx < 0 {
+			break
+		}
+		domain = domain[idx+1:]
+	}
+	return h.upstreamMap[""]
+}
+
+func (h *MyHandler) ServeDNS(w dns.ResponseWriter, reqMsg *dns.Msg) {
+	appendEdns0Subnet(reqMsg)
+	reqMsg.Compress = true
+
+	for i, q := range reqMsg.Question {
+		up := h.determineRoute(q.Name)
+		cls, ok := dns.ClassToString[q.Qclass]
+		if !ok {
+			cls = "UnknownClass"
+		}
+		typ, ok := dns.TypeToString[q.Qtype]
+		if !ok {
+			typ = "UnknownType"
+		}
+
+		m := reqMsg.Copy()
+		m.Question = m.Question[i : i+1]
+		respMsg, rtt, err := up.Exchange(m)
+		log.Printf("%s#%d %d/%d query %v, class=%s, type=%s => %s, rtt=%dms", w.RemoteAddr(), reqMsg.Id, i, len(reqMsg.Question), q.Name, cls, typ, up.Name(), rtt/1e6)
+
+		if err != nil {
+			log.Printf("Exchange: %v", err)
+		}
+		if respMsg != nil {
+			if err := w.WriteMsg(respMsg); err != nil {
+				log.Printf("WriteMsg: %v", err)
+			}
+		}
 	}
 }
 
@@ -61,11 +129,15 @@ func main() {
 			time.Sleep(1 * time.Second)
 		}
 	}()
+	upstreamMap := make(map[string]Upstream)
+	upstreamMap[""] = &UdpUpstream{
+		NameServer: GoogleDNS,
+	}
 	server := &dns.Server{
 		Addr: "127.0.0.1:53",
 		Net:  "udp",
 		Handler: &MyHandler{
-			upstream: NewUpStreamDNS(),
+			upstreamMap: upstreamMap,
 		},
 		TsigSecret: nil,
 	}

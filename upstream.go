@@ -28,14 +28,14 @@ type TcpUdpUpstream struct {
 }
 
 func (t *TcpUdpUpstream) Name() string {
-	return fmt.Sprintf("%s://%s", t.Network, t.NameServer)
+	return t.Network + "://" + t.NameServer
 }
 
 func (t *TcpUdpUpstream) Exchange(m *dns.Msg) (r *dns.Msg, rtt time.Duration, err error) {
 	start := time.Now()
 	co := dns.Conn{}
 	if co.Conn, err = t.Dial(t.Network, t.NameServer); err != nil {
-		return nil, time.Since(start), fmt.Errorf("new conn: %v", err)
+		return nil, time.Since(start), fmt.Errorf("Dial: %v", err)
 	}
 	defer co.Close()
 	oldId := m.Id
@@ -81,32 +81,40 @@ func extractEdns0Subnet(m *dns.Msg) *dns.EDNS0_SUBNET {
 	return nil
 }
 
+type GoogleDnsHttpsQuestion struct {
+	Name string `json:"name"`
+	Type uint16 `json:"type"`
+}
+
+type GoogleDnsHttpsAnswer struct {
+	Name string `json:"name"`
+	Type uint16 `json:"type"`
+	TTL  uint32
+	Data string `json:"data"`
+}
+
 type GoogleDnsHttpsResponse struct {
-	Status   int
-	TC       bool
-	RD       bool
-	RA       bool
-	AD       bool
-	CD       bool
-	Question []struct {
-		Name string `json:"name"`
-		Type uint16 `json:"type"`
-	}
-	Answer []struct {
-		Name string `json:"name"`
-		Type uint16 `json:"type"`
-		TTL  uint32
-		Data string `json:"data"`
-	}
-	Authority []struct {
-		Name string `json:"name"`
-		Type uint16 `json:"type"`
-		TTL  uint32
-		Data string `json:"data"`
-	}
+	Status     int
+	TC         bool
+	RD         bool
+	RA         bool
+	AD         bool
+	CD         bool
+	Question   []GoogleDnsHttpsQuestion
+	Answer     []GoogleDnsHttpsAnswer
+	Authority  []GoogleDnsHttpsAnswer
 	Additional []struct {
 	}
 	Comment string
+}
+
+func extractRRHdr(a GoogleDnsHttpsAnswer) dns.RR_Header {
+	return dns.RR_Header{
+		Name:   a.Name,
+		Rrtype: a.Type,
+		Ttl:    a.TTL,
+		Class:  dns.ClassINET,
+	}
 }
 
 func (g *GoogleHttpsUpstream) Exchange(m *dns.Msg) (r *dns.Msg, rtt time.Duration, err error) {
@@ -153,110 +161,61 @@ func (g *GoogleHttpsUpstream) Exchange(m *dns.Msg) (r *dns.Msg, rtt time.Duratio
 		r.Question = append(r.Question, dns.Question{q.Name, q.Type, dns.ClassINET})
 	}
 	for _, a := range msgResp.Answer {
+		hdr := extractRRHdr(a)
 		var rr dns.RR
 		switch a.Type {
 		case dns.TypeA:
 			rr = &dns.A{
-				Hdr: dns.RR_Header{
-					Name:   a.Name,
-					Rrtype: a.Type,
-					Ttl:    a.TTL,
-					Class:  dns.ClassINET,
-				},
-				A: net.ParseIP(a.Data),
+				Hdr: hdr,
+				A:   net.ParseIP(a.Data),
 			}
 		case dns.TypeNS:
 			rr = &dns.NS{
-				Hdr: dns.RR_Header{
-					Name:   a.Name,
-					Rrtype: a.Type,
-					Ttl:    a.TTL,
-					Class:  dns.ClassINET,
-				},
-				Ns: a.Data,
+				Hdr: hdr,
+				Ns:  a.Data,
 			}
 		case dns.TypeMD:
 			rr = &dns.MD{
-				Hdr: dns.RR_Header{
-					Name:   a.Name,
-					Rrtype: a.Type,
-					Ttl:    a.TTL,
-					Class:  dns.ClassINET,
-				},
-				Md: a.Data,
+				Hdr: hdr,
+				Md:  a.Data,
 			}
 		case dns.TypeMF:
 			rr = &dns.MF{
-				Hdr: dns.RR_Header{
-					Name:   a.Name,
-					Rrtype: a.Type,
-					Ttl:    a.TTL,
-					Class:  dns.ClassINET,
-				},
-				Mf: a.Data,
+				Hdr: hdr,
+				Mf:  a.Data,
 			}
 		case dns.TypeCNAME:
 			rr = &dns.CNAME{
-				Hdr: dns.RR_Header{
-					Name:   a.Name,
-					Rrtype: a.Type,
-					Ttl:    a.TTL,
-					Class:  dns.ClassINET,
-				},
+				Hdr:    hdr,
 				Target: a.Data,
 			}
 		case dns.TypeSOA:
 		case dns.TypeMB:
 			rr = &dns.MB{
-				Hdr: dns.RR_Header{
-					Name:   a.Name,
-					Rrtype: a.Type,
-					Ttl:    a.TTL,
-					Class:  dns.ClassINET,
-				},
-				Mb: a.Data,
+				Hdr: hdr,
+				Mb:  a.Data,
 			}
 		case dns.TypeMG:
 			rr = &dns.MG{
-				Hdr: dns.RR_Header{
-					Name:   a.Name,
-					Rrtype: a.Type,
-					Ttl:    a.TTL,
-					Class:  dns.ClassINET,
-				},
-				Mg: a.Data,
+				Hdr: hdr,
+				Mg:  a.Data,
 			}
 		case dns.TypeMR:
 			rr = &dns.MR{
-				Hdr: dns.RR_Header{
-					Name:   a.Name,
-					Rrtype: a.Type,
-					Ttl:    a.TTL,
-					Class:  dns.ClassINET,
-				},
-				Mr: a.Data,
+				Hdr: hdr,
+				Mr:  a.Data,
 			}
 		case dns.TypeNULL:
 		case dns.TypePTR:
 			rr = &dns.PTR{
-				Hdr: dns.RR_Header{
-					Name:   a.Name,
-					Rrtype: a.Type,
-					Ttl:    a.TTL,
-					Class:  dns.ClassINET,
-				},
+				Hdr: hdr,
 				Ptr: a.Data,
 			}
 		case dns.TypeHINFO:
 		case dns.TypeMINFO:
 		case dns.TypeMX:
 			mx := &dns.MX{
-				Hdr: dns.RR_Header{
-					Name:   a.Name,
-					Rrtype: a.Type,
-					Ttl:    a.TTL,
-					Class:  dns.ClassINET,
-				},
+				Hdr: hdr,
 			}
 			parts := strings.Split(a.Data, " ")
 			if len(parts) < 2 {
@@ -269,22 +228,12 @@ func (g *GoogleHttpsUpstream) Exchange(m *dns.Msg) (r *dns.Msg, rtt time.Duratio
 			rr = mx
 		case dns.TypeTXT:
 			rr = &dns.TXT{
-				Hdr: dns.RR_Header{
-					Name:   a.Name,
-					Rrtype: a.Type,
-					Ttl:    a.TTL,
-					Class:  dns.ClassINET,
-				},
+				Hdr: hdr,
 				Txt: strings.Split(a.Data, " "),
 			}
 		case dns.TypeRP:
 			rp := &dns.RP{
-				Hdr: dns.RR_Header{
-					Name:   a.Name,
-					Rrtype: a.Type,
-					Ttl:    a.TTL,
-					Class:  dns.ClassINET,
-				},
+				Hdr: hdr,
 			}
 			parts := strings.Split(a.Data, " ")
 			if len(parts) < 2 {
@@ -294,22 +243,12 @@ func (g *GoogleHttpsUpstream) Exchange(m *dns.Msg) (r *dns.Msg, rtt time.Duratio
 			rr = rp
 		case dns.TypeAAAA:
 			rr = &dns.AAAA{
-				Hdr: dns.RR_Header{
-					Name:   a.Name,
-					Rrtype: a.Type,
-					Ttl:    a.TTL,
-					Class:  dns.ClassINET,
-				},
+				Hdr:  hdr,
 				AAAA: net.ParseIP(a.Data),
 			}
 		case dns.TypeSRV:
 			srv := &dns.SRV{
-				Hdr: dns.RR_Header{
-					Name:   a.Name,
-					Rrtype: a.Type,
-					Ttl:    a.TTL,
-					Class:  dns.ClassINET,
-				},
+				Hdr: hdr,
 			}
 			parts := strings.Split(a.Data, " ")
 			if len(parts) < 4 {
@@ -326,22 +265,12 @@ func (g *GoogleHttpsUpstream) Exchange(m *dns.Msg) (r *dns.Msg, rtt time.Duratio
 			rr = srv
 		case dns.TypeSPF:
 			rr = &dns.SPF{
-				Hdr: dns.RR_Header{
-					Name:   a.Name,
-					Rrtype: a.Type,
-					Ttl:    a.TTL,
-					Class:  dns.ClassINET,
-				},
+				Hdr: hdr,
 				Txt: strings.Split(a.Data, " "),
 			}
 		case dns.TypeDS:
 			ds := &dns.DS{
-				Hdr: dns.RR_Header{
-					Name:   a.Name,
-					Rrtype: a.Type,
-					Ttl:    a.TTL,
-					Class:  dns.ClassINET,
-				},
+				Hdr: hdr,
 			}
 			parts := strings.Split(a.Data, " ")
 			if len(parts) < 4 {
@@ -358,12 +287,7 @@ func (g *GoogleHttpsUpstream) Exchange(m *dns.Msg) (r *dns.Msg, rtt time.Duratio
 			rr = ds
 		case dns.TypeSSHFP:
 			sshfp := &dns.SSHFP{
-				Hdr: dns.RR_Header{
-					Name:   a.Name,
-					Rrtype: a.Type,
-					Ttl:    a.TTL,
-					Class:  dns.ClassINET,
-				},
+				Hdr: hdr,
 			}
 			parts := strings.Split(a.Data, " ")
 			if len(parts) < 3 {
@@ -378,12 +302,7 @@ func (g *GoogleHttpsUpstream) Exchange(m *dns.Msg) (r *dns.Msg, rtt time.Duratio
 			rr = sshfp
 		case dns.TypeRRSIG:
 			rrsig := &dns.RRSIG{
-				Hdr: dns.RR_Header{
-					Name:   a.Name,
-					Rrtype: a.Type,
-					Ttl:    a.TTL,
-					Class:  dns.ClassINET,
-				},
+				Hdr: hdr,
 			}
 			parts := strings.Split(a.Data, " ")
 			if len(parts) < 9 {
@@ -411,12 +330,7 @@ func (g *GoogleHttpsUpstream) Exchange(m *dns.Msg) (r *dns.Msg, rtt time.Duratio
 			rr = rrsig
 		case dns.TypeNSEC:
 			nsec := &dns.NSEC{
-				Hdr: dns.RR_Header{
-					Name:   a.Name,
-					Rrtype: a.Type,
-					Ttl:    a.TTL,
-					Class:  dns.ClassINET,
-				},
+				Hdr: hdr,
 			}
 			parts := strings.Split(a.Data, " ")
 			nsec.NextDomain = parts[0]
@@ -428,12 +342,7 @@ func (g *GoogleHttpsUpstream) Exchange(m *dns.Msg) (r *dns.Msg, rtt time.Duratio
 			rr = nsec
 		case dns.TypeDNSKEY:
 			dnskey := &dns.DNSKEY{
-				Hdr: dns.RR_Header{
-					Name:   a.Name,
-					Rrtype: a.Type,
-					Ttl:    a.TTL,
-					Class:  dns.ClassINET,
-				},
+				Hdr: hdr,
 			}
 			parts := strings.Split(a.Data, " ")
 			if len(parts) < 4 {
@@ -450,12 +359,7 @@ func (g *GoogleHttpsUpstream) Exchange(m *dns.Msg) (r *dns.Msg, rtt time.Duratio
 			rr = dnskey
 		case dns.TypeNSEC3:
 			nsec3 := &dns.NSEC3{
-				Hdr: dns.RR_Header{
-					Name:   a.Name,
-					Rrtype: a.Type,
-					Ttl:    a.TTL,
-					Class:  dns.ClassINET,
-				},
+				Hdr: hdr,
 			}
 			parts := strings.Split(a.Data, " ")
 			if len(parts) < 7 {
@@ -482,12 +386,7 @@ func (g *GoogleHttpsUpstream) Exchange(m *dns.Msg) (r *dns.Msg, rtt time.Duratio
 			rr = nsec3
 		case dns.TypeNSEC3PARAM:
 			nsec3param := &dns.NSEC3PARAM{
-				Hdr: dns.RR_Header{
-					Name:   a.Name,
-					Rrtype: a.Type,
-					Ttl:    a.TTL,
-					Class:  dns.ClassINET,
-				},
+				Hdr: hdr,
 			}
 			parts := strings.Split(a.Data, " ")
 			if len(parts) < 5 {
@@ -510,16 +409,12 @@ func (g *GoogleHttpsUpstream) Exchange(m *dns.Msg) (r *dns.Msg, rtt time.Duratio
 		}
 	}
 	for _, a := range msgResp.Authority {
+		hdr := extractRRHdr(a)
 		var rr dns.RR
 		switch a.Type {
 		case dns.TypeSOA:
 			soa := &dns.SOA{
-				Hdr: dns.RR_Header{
-					Name:   a.Name,
-					Rrtype: a.Type,
-					Ttl:    a.TTL,
-					Class:  dns.ClassINET,
-				},
+				Hdr: hdr,
 			}
 			parts := strings.Split(a.Data, " ")
 			if len(parts) < 7 {

@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
+	"log"
 	"net"
 	"net/http"
 	"sync"
+	"time"
 )
 
 const TaobaoIpURL = "http://ip.taobao.com/service/getIpInfo.php?ip=myip"
@@ -17,7 +19,7 @@ type MyIP struct {
 	ip net.IP
 }
 
-func (m *MyIP) Refresh() error {
+func (m *MyIP) refreshFromTaobaoIP() error {
 	req, err := http.NewRequest(http.MethodGet, TaobaoIpURL, nil)
 	if err != nil {
 		return err
@@ -65,4 +67,22 @@ func (m *MyIP) SetIP(ip net.IP) {
 	m.Lock()
 	m.ip = ip
 	m.Unlock()
+}
+
+func (m *MyIP) StartTaobaoIPLoop() {
+	go func() {
+		oldIP := m.GetIP()
+		for {
+			if err := m.refreshFromTaobaoIP(); err != nil {
+				log.Printf("refresh myip failed: %v", err)
+			} else {
+				newIP := m.GetIP()
+				if !oldIP.Equal(newIP) {
+					log.Printf("myip changed from %s to %s", oldIP, newIP)
+					oldIP = newIP
+				}
+			}
+			time.Sleep(1 * time.Second)
+		}
+	}()
 }

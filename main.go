@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"log"
 	"net"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+	"net/url"
 )
 
 const (
@@ -17,6 +19,8 @@ const (
 )
 
 var (
+	confFile = flag.String("conf", "config.json", "Specify config json path")
+
 	myIP                *MyIP
 	possibleLoopDomains = []string{GoogleDnsHttpsDomain}
 	fallbackUpstream    = &TcpUdpUpstream{
@@ -34,7 +38,7 @@ type MyHandler struct {
 
 func appendEdns0Subnet(m *dns.Msg) {
 	addr := myIP.GetIP()
-	if addr.IsLoopback() {
+	if addr == nil || addr.IsLoopback() {
 		return
 	}
 	o := new(dns.OPT)
@@ -123,8 +127,17 @@ func (h *MyHandler) ServeDNS(w dns.ResponseWriter, reqMsg *dns.Msg) {
 
 func init() {
 	log.SetOutput(os.Stdout)
-	myIP = &MyIP{
-		Client: &http.Client{
+}
+
+func main() {
+	flag.Parse()
+	config, err := GetConfigFromFile(*confFile)
+	if err != nil {
+		log.Fatalln(err)
+	}
+	myIP = new(MyIP)
+	if config.MyIP == "" {
+		myIP.Client = &http.Client{
 			Transport: &http.Transport{
 				Dial: (&net.Dialer{
 					Timeout: 3 * time.Second,
@@ -133,50 +146,69 @@ func init() {
 				IdleConnTimeout:       30 * time.Second,
 			},
 			Timeout: 30 * time.Second,
-		},
-	}
-	myIP.SetIP(net.IP{127, 0, 0, 1})
-}
-
-func main() {
-	go func() {
-		oldIP := myIP.GetIP()
-		for {
-			if err := myIP.Refresh(); err != nil {
-				log.Printf("refresh myip failed: %v", err)
-			} else {
-				newIP := myIP.GetIP()
-				if !oldIP.Equal(newIP) {
-					log.Printf("myip changed from %s to %s", oldIP, newIP)
-					oldIP = newIP
-				}
-			}
-			time.Sleep(1 * time.Second)
 		}
-	}()
+		myIP.SetIP(net.IP{127, 0, 0, 1})
+		myIP.StartTaobaoIPLoop()
+	} else {
+		myIP.SetIP(net.ParseIP(config.MyIP))
+	}
 	upstreamMap := make(map[string]Upstream)
-	upstreamMap[""] = &GoogleHttpsUpstream{
-		Client: &http.Client{
-			Transport: &http.Transport{
-				Dial: (&net.Dialer{
-					Timeout:   2 * time.Second,
-					KeepAlive: 300 * time.Second,
-				}).Dial,
-				ResponseHeaderTimeout: 2 * time.Second,
+	for k, v := range config.Mapping {
+		if _, _, err := net.SplitHostPort(v); err != nil {
+			if strings.Contains(err.Error(), "missing port in address") {
+				v += ":53"
+			} else {
+				log.Fatalf("dns server %s invalid: %v", v, err)
+			}
+		}
+		upstreamMap[k] = &TcpUdpUpstream{
+			NameServer: v,
+			Network:    "udp",
+			Dial: (&net.Dialer{
+				Timeout: DNSTimeout,
+			}).Dial,
+		}
+	}
+	if _, ok := upstreamMap[""]; !ok {
+		dial := (&net.Dialer{
+			Timeout: 5 * time.Second,
+		}).Dial
+		if config.Proxy != "" {
+			u, err := url.Parse(config.Proxy)
+			if err != nil {
+				log.Fatalf("invalid proxy url %s: %v", config.Proxy, err)
+			}
+			if dial, err = NewDialFromURL(u); err != nil {
+				log.Fatalln(err)
+			}
+			domain := strings.SplitN(u.Host, ":", 2)[0]
+			if net.ParseIP(domain) == nil {
+				possibleLoopDomains = append(possibleLoopDomains, domain)
+			}
+		}
+		upstreamMap[""] = &GoogleHttpsUpstream{
+			Client: &http.Client{
+				Transport: &http.Transport{
+					Dial: dial,
+					ResponseHeaderTimeout: 2 * time.Second,
+				},
+				Timeout: 2 * time.Second,
 			},
-			Timeout: 2 * time.Second,
-		},
+		}
+	}
+	listenAddr := "127.0.0.1:53"
+	if config.Listen != "" {
+		listenAddr = config.Listen
 	}
 	server := &dns.Server{
-		Addr: "127.0.0.1:53",
+		Addr: listenAddr,
 		Net:  "udp",
 		Handler: &MyHandler{
 			upstreamMap: upstreamMap,
 		},
 		TsigSecret: nil,
 	}
-	err := server.ListenAndServe()
-	if err != nil {
-		log.Printf("Failed to setup the server: %s\n", err.Error())
+	if err := server.ListenAndServe(); err != nil {
+		log.Fatalf("Failed to setup the server: %v", err)
 	}
 }

@@ -1,8 +1,8 @@
-Local DNS服务器，解决DNS污染问题。
+Local DNS服务器。
 
 1. 服务端是[Google HTTPS DNS](https://developers.google.com/speed/public-dns/docs/dns-over-https)
 
-2. 通过ShadowSocks支持解决访问的问题。
+2. 通过ShadowSocks解决访问问题。
 
 3. 通过传递探测到的公网IP作为edns0 subnet的参数来解决CDN解析出美国IP而不是中国IP的问题。
 

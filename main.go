@@ -25,6 +25,7 @@ var (
 	confFile = flag.String("conf", "config.json", "Specify config json path")
 
 	myIP                *MyIP
+	dnsCache            *DNSCache
 	possibleLoopDomains = []string{GoogleDnsHttpsDomain}
 	fallbackUpstream    = &TcpUdpUpstream{
 		NameServer: AliDNS,
@@ -37,7 +38,7 @@ var (
 
 type MyHandler struct {
 	upstreamMap map[string][]Upstream
-	cache       *dnsCache
+	cache       *DNSCache
 }
 
 func appendEdns0Subnet(m *dns.Msg, addr net.IP) {
@@ -217,7 +218,9 @@ func main() {
 			Timeout: 30 * time.Second,
 		}
 		myIP.SetIP(net.IP{127, 0, 0, 1})
-		myIP.StartTaobaoIPLoop()
+		myIP.StartTaobaoIPLoop(func(oldIP, newIP net.IP) {
+			dnsCache.Purge()
+		})
 	} else {
 		myIP.SetIP(net.ParseIP(config.MyIP))
 	}
@@ -295,12 +298,13 @@ func main() {
 	if cacheSize == 0 {
 		cacheSize = 1000
 	}
+	dnsCache = NewDNSCache(cacheSize)
 	server := &dns.Server{
 		Addr: listenAddr,
 		Net:  "udp",
 		Handler: &MyHandler{
 			upstreamMap: upstreamMap,
-			cache:       NewDNSCache(cacheSize),
+			cache:       dnsCache,
 		},
 		TsigSecret: nil,
 	}

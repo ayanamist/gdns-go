@@ -69,7 +69,7 @@ func (m *MyIP) SetIP(ip net.IP) {
 	m.Unlock()
 }
 
-func (m *MyIP) StartTaobaoIPLoop() {
+func (m *MyIP) StartTaobaoIPLoop(cb func(oldIP, newIP net.IP)) {
 	go func() {
 		oldIP := m.GetIP()
 		for {
@@ -79,6 +79,9 @@ func (m *MyIP) StartTaobaoIPLoop() {
 				newIP := m.GetIP()
 				if !oldIP.Equal(newIP) {
 					log.Printf("myip changed from %s to %s", oldIP, newIP)
+					if cb != nil {
+						go cb(oldIP, newIP)
+					}
 					oldIP = newIP
 				}
 			}

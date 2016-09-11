@@ -7,7 +7,7 @@ import (
 	"github.com/miekg/dns"
 )
 
-type dnsCache struct {
+type DNSCache struct {
 	m    *sync.RWMutex
 	head *dnsCacheEntry
 	tail *dnsCacheEntry
@@ -23,15 +23,15 @@ type dnsCacheEntry struct {
 	next *dnsCacheEntry
 }
 
-func NewDNSCache(size uint32) *dnsCache {
-	return &dnsCache{
+func NewDNSCache(size uint32) *DNSCache {
+	return &DNSCache{
 		m:    new(sync.RWMutex),
 		c:    make(map[dns.Question]*dnsCacheEntry, size),
 		size: size,
 	}
 }
 
-func (d *dnsCache) Put(q dns.Question, m *dns.Msg) {
+func (d *DNSCache) Put(q dns.Question, m *dns.Msg) {
 	var minTTL uint32 = 0xffffffff
 	for _, rr := range m.Answer {
 		ttl := rr.Header().Ttl
@@ -72,7 +72,7 @@ func (d *dnsCache) Put(q dns.Question, m *dns.Msg) {
 	d.m.Unlock()
 }
 
-func (d *dnsCache) Get(q dns.Question) *dns.Msg {
+func (d *DNSCache) Get(q dns.Question) *dns.Msg {
 	d.m.RLock()
 	e, ok := d.c[q]
 	if !ok {
@@ -96,7 +96,7 @@ func (d *dnsCache) Get(q dns.Question) *dns.Msg {
 	return e.m
 }
 
-func (d *dnsCache) recycle() {
+func (d *DNSCache) recycle() {
 	if uint32(len(d.c)) < d.size {
 		return
 	}
@@ -111,7 +111,7 @@ func (d *dnsCache) recycle() {
 	}
 }
 
-func (d *dnsCache) delete(e *dnsCacheEntry) {
+func (d *DNSCache) delete(e *dnsCacheEntry) {
 	delete(d.c, e.q)
 	if e.prev != nil {
 		e.prev.next = e.next
@@ -131,4 +131,12 @@ func (d *dnsCache) delete(e *dnsCacheEntry) {
 			d.tail.next = nil
 		}
 	}
+}
+
+func (d *DNSCache) Purge() {
+	d.m.Lock()
+	d.c = make(map[dns.Question]*dnsCacheEntry, d.size)
+	d.head = nil
+	d.tail = nil
+	d.m.Unlock()
 }

@@ -24,8 +24,7 @@ func newSSDial(u *url.URL) (func(network, addr string) (net.Conn, error), error)
 	if !ok {
 		return nil, errors.New("no password")
 	}
-	cipher, err := ss.NewCipher(u.User.Username(), password)
-	if err != nil {
+	if _, err := ss.NewCipher(u.User.Username(), password); err != nil {
 		return nil, err
 	}
 	return func(network, addr string) (net.Conn, error) {
@@ -37,6 +36,7 @@ func newSSDial(u *url.URL) (func(network, addr string) (net.Conn, error), error)
 		if err != nil {
 			return nil, err
 		}
+		cipher, _ := ss.NewCipher(u.User.Username(), password)
 		c := ss.NewConn(conn, cipher)
 		if _, err = c.Write(rawAddr); err != nil {
 			c.Close()

@@ -1,16 +1,18 @@
 package main
 
 import (
+	"crypto/tls"
 	"flag"
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
 
 	"github.com/miekg/dns"
-	"net/url"
+	"golang.org/x/net/http2"
 )
 
 const (
@@ -188,9 +190,14 @@ func main() {
 		}
 		upstreamMap[""] = &GoogleHttpsUpstream{
 			Client: &http.Client{
-				Transport: &http.Transport{
-					Dial: dial,
-					ResponseHeaderTimeout: 2 * time.Second,
+				Transport: &http2.Transport{
+					DialTLS: func(network, addr string, cfg *tls.Config) (net.Conn, error) {
+						conn, err := dial(network, addr)
+						if err != nil {
+							return nil, err
+						}
+						return tls.Client(conn, cfg), nil
+					},
 				},
 				Timeout: 2 * time.Second,
 			},

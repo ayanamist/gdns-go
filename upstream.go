@@ -17,7 +17,7 @@ import (
 
 type Upstream interface {
 	Name() string
-	Exchange(m *dns.Msg) (r *dns.Msg, rtt time.Duration, err error)
+	Exchange(m *dns.Msg) (r *dns.Msg, err error)
 }
 
 type TcpUdpUpstream struct {
@@ -31,18 +31,17 @@ func (t *TcpUdpUpstream) Name() string {
 	return t.Network + "://" + t.NameServer
 }
 
-func (t *TcpUdpUpstream) Exchange(m *dns.Msg) (r *dns.Msg, rtt time.Duration, err error) {
-	start := time.Now()
+func (t *TcpUdpUpstream) Exchange(m *dns.Msg) (r *dns.Msg, err error) {
 	co := new(dns.Conn)
 	if co.Conn, err = t.Dial(t.Network, t.NameServer); err != nil {
-		return nil, time.Since(start), fmt.Errorf("Dial: %v", err)
+		return nil, fmt.Errorf("Dial: %v", err)
 	}
 	defer co.Close()
 	oldId := m.Id
 	m.Id = uint16(atomic.AddUint32(&t.trId, 1))
 	co.SetWriteDeadline(time.Now().Add(DNSTimeout))
 	if err = co.WriteMsg(m); err != nil {
-		return nil, time.Since(start), fmt.Errorf("WriteMsg: %v", err)
+		return nil, fmt.Errorf("WriteMsg: %v", err)
 	}
 	co.SetReadDeadline(time.Now().Add(DNSTimeout))
 	r, err = co.ReadMsg()
@@ -52,7 +51,7 @@ func (t *TcpUdpUpstream) Exchange(m *dns.Msg) (r *dns.Msg, rtt time.Duration, er
 	if r != nil {
 		r.Id = oldId
 	}
-	return r, time.Since(start), err
+	return r, err
 }
 
 const (
@@ -117,8 +116,7 @@ func extractRRHdr(a GoogleDnsHttpsAnswer) dns.RR_Header {
 	}
 }
 
-func (g *GoogleHttpsUpstream) Exchange(m *dns.Msg) (r *dns.Msg, rtt time.Duration, err error) {
-	start := time.Now()
+func (g *GoogleHttpsUpstream) Exchange(m *dns.Msg) (r *dns.Msg, err error) {
 	params := url.Values{
 		"name": {m.Question[0].Name},
 		"type": {strconv.FormatUint(uint64(m.Question[0].Qtype), 10)},
@@ -130,23 +128,23 @@ func (g *GoogleHttpsUpstream) Exchange(m *dns.Msg) (r *dns.Msg, rtt time.Duratio
 	reqUrl := GoogleDnsHttpsUrl + "?" + params.Encode()
 	req, err := http.NewRequest(http.MethodGet, reqUrl, nil)
 	if err != nil {
-		return nil, time.Since(start), err
+		return nil, err
 	}
 	resp, err := g.Client.Do(req)
 	if err != nil {
-		return nil, time.Since(start), err
+		return nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, time.Since(start), fmt.Errorf("status=%s", resp.Status)
+		return nil, fmt.Errorf("status=%s", resp.Status)
 	}
 	respBytes, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		return nil, time.Since(start), err
+		return nil, err
 	}
 	var msgResp GoogleDnsHttpsResponse
 	if err := json.Unmarshal(respBytes, &msgResp); err != nil {
-		return nil, time.Since(start), err
+		return nil, err
 	}
 	r = new(dns.Msg)
 	r.Id = m.Id
@@ -437,7 +435,6 @@ func (g *GoogleHttpsUpstream) Exchange(m *dns.Msg) (r *dns.Msg, rtt time.Duratio
 		}
 		r.Ns = append(r.Ns, rr)
 	}
-	rtt = time.Since(start)
 	err = nil
 	return
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/tls"
+	"errors"
 	"flag"
 	"log"
 	"net"
@@ -35,7 +36,7 @@ var (
 )
 
 type MyHandler struct {
-	upstreamMap map[string]Upstream
+	upstreamMap map[string][]Upstream
 }
 
 func appendEdns0Subnet(m *dns.Msg) {
@@ -61,19 +62,19 @@ func appendEdns0Subnet(m *dns.Msg) {
 	m.Extra = append(m.Extra, o)
 }
 
-func (h *MyHandler) determineRoute(domain string) (u Upstream) {
+func (h *MyHandler) determineRoute(domain string) (u []Upstream) {
 	for domain != "" && domain[len(domain)-1] == '.' {
 		domain = domain[:len(domain)-1]
 	}
 	avoidLoop := false
-	for _, d := range possibleLoopDomains {
-		if domain == d {
-			avoidLoop = true
-			break
-		}
-	}
 	var ok bool
 	for domain != "" {
+		for _, d := range possibleLoopDomains {
+			if domain == d {
+				avoidLoop = true
+				break
+			}
+		}
 		u, ok = h.upstreamMap[domain]
 		if ok {
 			break
@@ -84,12 +85,20 @@ func (h *MyHandler) determineRoute(domain string) (u Upstream) {
 		}
 		domain = domain[idx+1:]
 	}
-	if u == nil {
+	if len(u) == 0 {
 		u = h.upstreamMap[""]
 	}
 	if avoidLoop {
-		if _, ok = u.(*GoogleHttpsUpstream); ok {
-			u = fallbackUpstream
+		new := []Upstream{}
+		for _, s := range u {
+			if _, ok = s.(*GoogleHttpsUpstream); !ok {
+				new = append(new, s)
+			}
+		}
+		if len(new) > 0 {
+			u = new
+		} else {
+			u = []Upstream{fallbackUpstream}
 		}
 	}
 	return
@@ -99,26 +108,52 @@ func (h *MyHandler) ServeDNS(w dns.ResponseWriter, reqMsg *dns.Msg) {
 	appendEdns0Subnet(reqMsg)
 	reqMsg.Compress = true
 
-	for i, q := range reqMsg.Question {
-		up := h.determineRoute(q.Name)
-		cls, ok := dns.ClassToString[q.Qclass]
-		if !ok {
-			cls = "UnknownClass"
-		}
+	type chanResp struct {
+		m   *dns.Msg
+		err error
+	}
+	var err error
+	var respMsg *dns.Msg
+	allQuestions := reqMsg.Question
+	for qi, q := range allQuestions {
 		typ, ok := dns.TypeToString[q.Qtype]
 		if !ok {
 			typ = "UnknownType"
 		}
 
-		m := reqMsg.Copy()
-		m.Question = m.Question[i : i+1]
-		log.Printf("%s#%d %d/%d query %v, class=%s, type=%s => %s", w.RemoteAddr(), reqMsg.Id, i+1, len(reqMsg.Question), q.Name, cls, typ, up.Name())
-		respMsg, rtt, err := up.Exchange(m)
-		log.Printf("%s#%d %d/%d rtt=%dms", w.RemoteAddr(), reqMsg.Id, i+1, len(reqMsg.Question), rtt/1e6)
+		up := h.determineRoute(q.Name)
 
-		if err != nil {
-			log.Printf("Exchange: %v", err)
+		timeout := 200 * time.Millisecond
+		if len(up) == 1 {
+			timeout = DNSTimeout
 		}
+		for i, u := range up {
+			m := reqMsg.Copy()
+			m.Question = allQuestions[qi : qi+1]
+
+			log.Printf("%s#%d %d/%d query %v, type=%s => %s(%d)", w.RemoteAddr(), m.Id, qi+1, len(allQuestions), q.Name, typ, u.Name(), i)
+			ch := make(chan chanResp)
+			go func(i int, u Upstream, m *dns.Msg, ch chan chanResp) {
+				start := time.Now()
+				respMsg, err := u.Exchange(m)
+				log.Printf("%s#%d %d/%d %s(%d) rtt=%dms, err=%v", w.RemoteAddr(), m.Id, qi+1, len(allQuestions), u.Name(), i, time.Since(start)/1e6, err)
+				ch <- chanResp{respMsg, err}
+				close(ch)
+			}(i, u, m, ch)
+			select {
+			case resp := <-ch:
+				respMsg, err = resp.m, resp.err
+			case <-time.After(timeout):
+				go func() {
+					<-ch
+				}()
+				respMsg, err = nil, errors.New("single timeout")
+			}
+			if err == nil {
+				break
+			}
+		}
+
 		if respMsg != nil {
 			if err := w.WriteMsg(respMsg); err != nil {
 				log.Printf("WriteMsg: %v", err)
@@ -137,6 +172,7 @@ func main() {
 	if err != nil {
 		log.Fatalln(err)
 	}
+
 	myIP = new(MyIP)
 	if config.MyIP == "" {
 		myIP.Client = &http.Client{
@@ -154,55 +190,71 @@ func main() {
 	} else {
 		myIP.SetIP(net.ParseIP(config.MyIP))
 	}
-	upstreamMap := make(map[string]Upstream)
-	for k, v := range config.Mapping {
-		if _, _, err := net.SplitHostPort(v); err != nil {
-			if strings.Contains(err.Error(), "missing port in address") {
-				v += ":53"
-			} else {
-				log.Fatalf("dns server %s invalid: %v", v, err)
-			}
+
+	dial := (&net.Dialer{
+		Timeout: 5 * time.Second,
+	}).Dial
+	if config.Proxy != "" {
+		u, err := url.Parse(config.Proxy)
+		if err != nil {
+			log.Fatalf("invalid proxy url %s: %v", config.Proxy, err)
 		}
-		upstreamMap[k] = &TcpUdpUpstream{
-			NameServer: v,
-			Network:    "udp",
-			Dial: (&net.Dialer{
-				Timeout: DNSTimeout,
-			}).Dial,
+		if dial, err = NewDialFromURL(u); err != nil {
+			log.Fatalln(err)
+		}
+		domain := strings.SplitN(u.Host, ":", 2)[0]
+		if net.ParseIP(domain) == nil {
+			possibleLoopDomains = append(possibleLoopDomains, domain)
+		}
+	}
+	defaultGoogleUpstream := &GoogleHttpsUpstream{
+		Client: &http.Client{
+			Transport: &http2.Transport{
+				DialTLS: func(network, addr string, cfg *tls.Config) (net.Conn, error) {
+					conn, err := dial(network, addr)
+					if err != nil {
+						return nil, err
+					}
+					return tls.Client(conn, cfg), nil
+				},
+			},
+			Timeout: 2 * time.Second,
+		},
+	}
+
+	upstreamMap := make(map[string][]Upstream)
+	for k, v := range config.Mapping {
+		upstreams := []Upstream{}
+		for _, v := range strings.Split(v, ",") {
+			var upstream Upstream
+			if v == "default" {
+				upstream = defaultGoogleUpstream
+			} else {
+				if _, _, err := net.SplitHostPort(v); err != nil {
+					if strings.Contains(err.Error(), "missing port in address") {
+						v += ":53"
+					} else {
+						log.Fatalf("dns server %s invalid: %v", v, err)
+					}
+				}
+				upstream = &TcpUdpUpstream{
+					NameServer: v,
+					Network:    "udp",
+					Dial: (&net.Dialer{
+						Timeout: DNSTimeout,
+					}).Dial,
+				}
+			}
+			upstreams = append(upstreams, upstream)
+		}
+		if len(upstreams) > 0 {
+			upstreamMap[k] = upstreams
 		}
 	}
 	if _, ok := upstreamMap[""]; !ok {
-		dial := (&net.Dialer{
-			Timeout: 5 * time.Second,
-		}).Dial
-		if config.Proxy != "" {
-			u, err := url.Parse(config.Proxy)
-			if err != nil {
-				log.Fatalf("invalid proxy url %s: %v", config.Proxy, err)
-			}
-			if dial, err = NewDialFromURL(u); err != nil {
-				log.Fatalln(err)
-			}
-			domain := strings.SplitN(u.Host, ":", 2)[0]
-			if net.ParseIP(domain) == nil {
-				possibleLoopDomains = append(possibleLoopDomains, domain)
-			}
-		}
-		upstreamMap[""] = &GoogleHttpsUpstream{
-			Client: &http.Client{
-				Transport: &http2.Transport{
-					DialTLS: func(network, addr string, cfg *tls.Config) (net.Conn, error) {
-						conn, err := dial(network, addr)
-						if err != nil {
-							return nil, err
-						}
-						return tls.Client(conn, cfg), nil
-					},
-				},
-				Timeout: 2 * time.Second,
-			},
-		}
+		upstreamMap[""] = []Upstream{defaultGoogleUpstream}
 	}
+
 	listenAddr := "127.0.0.1:53"
 	if config.Listen != "" {
 		listenAddr = config.Listen
@@ -215,6 +267,8 @@ func main() {
 		},
 		TsigSecret: nil,
 	}
+
+	log.Printf("try to listen on %s", listenAddr)
 	if err := server.ListenAndServe(); err != nil {
 		log.Fatalf("Failed to setup the server: %v", err)
 	}

@@ -39,11 +39,7 @@ type MyHandler struct {
 	upstreamMap map[string][]Upstream
 }
 
-func appendEdns0Subnet(m *dns.Msg) {
-	addr := myIP.GetIP()
-	if addr == nil || addr.IsLoopback() {
-		return
-	}
+func appendEdns0Subnet(m *dns.Msg, addr net.IP) {
 	o := new(dns.OPT)
 	o.Hdr.Name = "."
 	o.Hdr.Rrtype = dns.TypeOPT
@@ -105,14 +101,25 @@ func (h *MyHandler) determineRoute(domain string) (u []Upstream) {
 }
 
 func (h *MyHandler) ServeDNS(w dns.ResponseWriter, reqMsg *dns.Msg) {
-	appendEdns0Subnet(reqMsg)
-	reqMsg.Compress = true
+	var addr net.IP
+	remoteHost, _, err := net.SplitHostPort(w.RemoteAddr().String())
+	if err == nil {
+		addr = net.ParseIP(remoteHost)
+		if addr != nil && addr.IsLoopback() {
+			addr = nil
+		}
+	}
+	if addr == nil {
+		addr = myIP.GetIP()
+	}
+	if addr != nil && !addr.IsLoopback() {
+		appendEdns0Subnet(reqMsg, addr)
+	}
 
 	type chanResp struct {
 		m   *dns.Msg
 		err error
 	}
-	var err error
 	var respMsg *dns.Msg
 	allQuestions := reqMsg.Question
 	for qi, q := range allQuestions {

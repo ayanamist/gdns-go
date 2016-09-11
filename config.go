@@ -7,10 +7,11 @@ import (
 )
 
 type Config struct {
-	Listen  string            `json:"listen"`
-	Proxy   string            `json:"proxy"`
-	MyIP    string            `json:"myip"`
-	Mapping map[string]string `json:"mapping"`
+	Listen    string            `json:"listen"`
+	Proxy     string            `json:"proxy"`
+	MyIP      string            `json:"myip"`
+	Mapping   map[string]string `json:"mapping"`
+	CacheSize uint32            `json:"cache_size"`
 }
 
 func GetConfigFromFile(path string) (*Config, error) {

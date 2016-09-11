@@ -37,6 +37,7 @@ var (
 
 type MyHandler struct {
 	upstreamMap map[string][]Upstream
+	cache       *dnsCache
 }
 
 func appendEdns0Subnet(m *dns.Msg, addr net.IP) {
@@ -128,37 +129,47 @@ func (h *MyHandler) ServeDNS(w dns.ResponseWriter, reqMsg *dns.Msg) {
 			typ = "UnknownType"
 		}
 
-		up := h.determineRoute(q.Name)
+		respMsg = h.cache.Get(q)
+		if respMsg == nil {
+			up := h.determineRoute(q.Name)
 
-		timeout := 200 * time.Millisecond
-		if len(up) == 1 {
-			timeout = DNSTimeout
-		}
-		for i, u := range up {
-			m := reqMsg.Copy()
-			m.Question = allQuestions[qi : qi+1]
+			timeout := 200 * time.Millisecond
+			if len(up) == 1 {
+				timeout = DNSTimeout
+			}
+			for i, u := range up {
+				m := reqMsg.Copy()
+				m.Question = allQuestions[qi : qi+1]
 
-			log.Printf("%s#%d %d/%d query %v, type=%s => %s(%d)", w.RemoteAddr(), m.Id, qi+1, len(allQuestions), q.Name, typ, u.Name(), i)
-			ch := make(chan chanResp)
-			go func(i int, u Upstream) {
-				start := time.Now()
-				respMsg, err := u.Exchange(m)
-				log.Printf("%s#%d %d/%d %s(%d) rtt=%dms, err=%v", w.RemoteAddr(), m.Id, qi+1, len(allQuestions), u.Name(), i, time.Since(start)/1e6, err)
-				ch <- chanResp{respMsg, err}
-				close(ch)
-			}(i, u)
-			select {
-			case resp := <-ch:
-				respMsg, err = resp.m, resp.err
-			case <-time.After(timeout):
-				go func() {
-					<-ch
-				}()
-				respMsg, err = nil, errors.New("single timeout")
+				log.Printf("%s#%d %d/%d query %v, type=%s => %s(%d)", w.RemoteAddr(), m.Id, qi+1, len(allQuestions), q.Name, typ, u.Name(), i)
+				ch := make(chan chanResp)
+				go func(i int, u Upstream) {
+					start := time.Now()
+					respMsg, err := u.Exchange(m)
+					log.Printf("%s#%d %d/%d %s(%d) rtt=%dms, err=%v", w.RemoteAddr(), m.Id, qi+1, len(allQuestions), u.Name(), i, time.Since(start)/1e6, err)
+					ch <- chanResp{respMsg, err}
+					close(ch)
+				}(i, u)
+				select {
+				case resp := <-ch:
+					respMsg, err = resp.m, resp.err
+				case <-time.After(timeout):
+					go func() {
+						<-ch
+					}()
+					respMsg, err = nil, errors.New("single timeout")
+				}
+				if err == nil {
+					break
+				}
 			}
-			if err == nil {
-				break
+
+			if respMsg != nil {
+				h.cache.Put(q, respMsg)
 			}
+		} else {
+			respMsg.Id = reqMsg.Id
+			log.Printf("%s#%d %d/%d query %v, type=%s => cache", w.RemoteAddr(), respMsg.Id, qi+1, len(allQuestions), q.Name, typ)
 		}
 
 		if respMsg != nil {
@@ -266,11 +277,17 @@ func main() {
 	if config.Listen != "" {
 		listenAddr = config.Listen
 	}
+
+	cacheSize := config.CacheSize
+	if cacheSize == 0 {
+		cacheSize = 1000
+	}
 	server := &dns.Server{
 		Addr: listenAddr,
 		Net:  "udp",
 		Handler: &MyHandler{
 			upstreamMap: upstreamMap,
+			cache:       NewDNSCache(cacheSize),
 		},
 		TsigSecret: nil,
 	}

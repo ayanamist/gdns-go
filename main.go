@@ -140,13 +140,13 @@ func (h *MyHandler) ServeDNS(w dns.ResponseWriter, reqMsg *dns.Msg) {
 
 			log.Printf("%s#%d %d/%d query %v, type=%s => %s(%d)", w.RemoteAddr(), m.Id, qi+1, len(allQuestions), q.Name, typ, u.Name(), i)
 			ch := make(chan chanResp)
-			go func(i int, u Upstream, m *dns.Msg, ch chan chanResp) {
+			go func(i int, u Upstream) {
 				start := time.Now()
 				respMsg, err := u.Exchange(m)
 				log.Printf("%s#%d %d/%d %s(%d) rtt=%dms, err=%v", w.RemoteAddr(), m.Id, qi+1, len(allQuestions), u.Name(), i, time.Since(start)/1e6, err)
 				ch <- chanResp{respMsg, err}
 				close(ch)
-			}(i, u, m, ch)
+			}(i, u)
 			select {
 			case resp := <-ch:
 				respMsg, err = resp.m, resp.err

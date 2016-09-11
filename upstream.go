@@ -33,7 +33,7 @@ func (t *TcpUdpUpstream) Name() string {
 
 func (t *TcpUdpUpstream) Exchange(m *dns.Msg) (r *dns.Msg, rtt time.Duration, err error) {
 	start := time.Now()
-	co := dns.Conn{}
+	co := new(dns.Conn)
 	if co.Conn, err = t.Dial(t.Network, t.NameServer); err != nil {
 		return nil, time.Since(start), fmt.Errorf("Dial: %v", err)
 	}

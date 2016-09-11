@@ -39,6 +39,9 @@ func (t *TcpUdpUpstream) Exchange(m *dns.Msg) (r *dns.Msg, err error) {
 	defer co.Close()
 	oldId := m.Id
 	m.Id = uint16(atomic.AddUint32(&t.trId, 1))
+	defer func() {
+		m.Id = oldId
+	}()
 	co.SetWriteDeadline(time.Now().Add(DNSTimeout))
 	if err = co.WriteMsg(m); err != nil {
 		return nil, fmt.Errorf("WriteMsg: %v", err)

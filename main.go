@@ -41,9 +41,20 @@ type MyHandler struct {
 }
 
 func appendEdns0Subnet(m *dns.Msg, addr net.IP) {
-	o := new(dns.OPT)
-	o.Hdr.Name = "."
-	o.Hdr.Rrtype = dns.TypeOPT
+	newOpt := true
+	var o *dns.OPT
+	for _, v := range m.Extra {
+		if v.Header().Rrtype == dns.TypeOPT {
+			o = v.(*dns.OPT)
+			newOpt = false
+			break
+		}
+	}
+	if o == nil {
+		o = new(dns.OPT)
+		o.Hdr.Name = "."
+		o.Hdr.Rrtype = dns.TypeOPT
+	}
 	e := new(dns.EDNS0_SUBNET)
 	e.Code = dns.EDNS0SUBNET
 	e.SourceScope = 0
@@ -56,7 +67,9 @@ func appendEdns0Subnet(m *dns.Msg, addr net.IP) {
 		e.SourceNetmask = net.IPv4len * 8
 	}
 	o.Option = append(o.Option, e)
-	m.Extra = append(m.Extra, o)
+	if newOpt {
+		m.Extra = append(m.Extra, o)
+	}
 }
 
 func (h *MyHandler) determineRoute(domain string) (u []Upstream) {

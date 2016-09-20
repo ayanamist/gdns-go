@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"time"
 
+	"golang.org/x/net/proxy"
 	ss "github.com/shadowsocks/shadowsocks-go/shadowsocks"
 )
 
@@ -14,6 +15,9 @@ func NewDialFromURL(u *url.URL) (func(network, addr string) (net.Conn, error), e
 	switch u.Scheme {
 	case "ss":
 		return newSSDial(u)
+	case "socks5":
+		dialer, err := proxy.FromURL(u, proxy.Direct)
+		return dialer.Dial, err
 	default:
 		return nil, fmt.Errorf("unsupported scheme: %s", u.Scheme)
 	}

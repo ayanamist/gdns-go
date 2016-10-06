@@ -1,4 +1,4 @@
-Local DNS服务器。[![Build Status](https://travis-ci.org/ayanamist/gdns-go.png?branch=master)](https://travis-ci.org/shadowsocks/shadowsocks-go)
+Local DNS服务器。[![Build Status](https://travis-ci.org/ayanamist/gdns-go.png?branch=master)](https://travis-ci.org/ayanamist/gdns-go)
 
 1. 服务端是[Google HTTPS DNS](https://developers.google.com/speed/public-dns/docs/dns-over-https)
 

@@ -1,3 +1,7 @@
 {
-  "listen": "127.0.0.1:5353"
+  "listen": "127.0.0.1:5353",
+  "proxy": "ss://aes-128-cfb:password@127.0.0.1:8388",
+  "mapping": {
+    "dns.google.com": "8.8.8.8"
+  }
 }

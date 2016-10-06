@@ -18,12 +18,11 @@ func NewDNSCache(size uint32) *DNSCache {
 	}
 }
 
-func msgKey(m *dns.Msg) string {
-	q := m.Question[0]
+func questionKey(q dns.Question) string {
 	return fmt.Sprintf("%s%d%d", q.Name, q.Qclass, q.Qtype)
 }
 
-func (d *DNSCache) Put(m *dns.Msg) {
+func (d *DNSCache) Put(q dns.Question, m *dns.Msg) {
 	var minTTL uint32 = 0xffffffff
 	for _, rr := range m.Answer {
 		ttl := rr.Header().Ttl
@@ -32,11 +31,11 @@ func (d *DNSCache) Put(m *dns.Msg) {
 		}
 	}
 
-	d.cache.Set(msgKey(m), m, time.Now().Add(time.Duration(minTTL)*time.Second))
+	d.cache.Set(questionKey(q), m, time.Now().Add(time.Duration(minTTL)*time.Second))
 }
 
-func (d *DNSCache) Get(q *dns.Msg) *dns.Msg {
-	v, found := d.cache.GetNotStale(msgKey(q))
+func (d *DNSCache) Get(q dns.Question) *dns.Msg {
+	v, found := d.cache.GetNotStale(questionKey(q))
 	if found {
 		return v.(*dns.Msg).Copy()
 	} else {

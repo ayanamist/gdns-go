@@ -17,8 +17,7 @@ import (
 )
 
 const (
-	AliDNS     = "223.5.5.5:53"
-	DNSTimeout = 2 * time.Second
+	AliDNS = "223.5.5.5:53"
 )
 
 var (
@@ -27,13 +26,8 @@ var (
 	myIP                *MyIP
 	dnsCache            *DNSCache
 	possibleLoopDomains = []string{GoogleDnsHttpsDomain}
-	fallbackUpstream    = &TcpUdpUpstream{
-		NameServer: AliDNS,
-		Network:    "udp",
-		Dial: (&net.Dialer{
-			Timeout: DNSTimeout,
-		}).Dial,
-	}
+	dnsQueryTimeoutSec  time.Duration
+	fallbackUpstream    *TcpUdpUpstream
 )
 
 type MyHandler struct {
@@ -147,10 +141,6 @@ func (h *MyHandler) ServeDNS(w dns.ResponseWriter, reqMsg *dns.Msg) {
 		if respMsg == nil {
 			up := h.determineRoute(q.Name)
 
-			timeout := 200 * time.Millisecond
-			if len(up) == 1 {
-				timeout = DNSTimeout
-			}
 			for i, u := range up {
 				m := reqMsg.Copy()
 				m.Question = allQuestions[qi : qi+1]
@@ -167,7 +157,7 @@ func (h *MyHandler) ServeDNS(w dns.ResponseWriter, reqMsg *dns.Msg) {
 				select {
 				case resp := <-ch:
 					respMsg, err = resp.m, resp.err
-				case <-time.After(timeout):
+				case <-time.After(dnsQueryTimeoutSec):
 					go func() {
 						<-ch
 					}()
@@ -203,6 +193,19 @@ func main() {
 	config, err := GetConfigFromFile(*confFile)
 	if err != nil {
 		log.Fatalln(err)
+	}
+
+	dnsQueryTimeoutSec = time.Duration(config.QueryTimeoutSec) * time.Second
+	if dnsQueryTimeoutSec == 0 {
+		dnsQueryTimeoutSec = 5 * time.Second
+	}
+
+	fallbackUpstream = &TcpUdpUpstream{
+		NameServer: AliDNS,
+		Network:    "udp",
+		Dial: (&net.Dialer{
+			Timeout: dnsQueryTimeoutSec,
+		}).Dial,
 	}
 
 	myIP = new(MyIP)
@@ -275,7 +278,7 @@ func main() {
 					NameServer: v,
 					Network:    "udp",
 					Dial: (&net.Dialer{
-						Timeout: DNSTimeout,
+						Timeout: dnsQueryTimeoutSec,
 					}).Dial,
 				}
 			}

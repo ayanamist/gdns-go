@@ -42,11 +42,11 @@ func (t *TcpUdpUpstream) Exchange(m *dns.Msg) (r *dns.Msg, err error) {
 	defer func() {
 		m.Id = oldId
 	}()
-	co.SetWriteDeadline(time.Now().Add(DNSTimeout))
+	co.SetWriteDeadline(time.Now().Add(dnsQueryTimeoutSec))
 	if err = co.WriteMsg(m); err != nil {
 		return nil, fmt.Errorf("WriteMsg: %v", err)
 	}
-	co.SetReadDeadline(time.Now().Add(DNSTimeout))
+	co.SetReadDeadline(time.Now().Add(dnsQueryTimeoutSec))
 	r, err = co.ReadMsg()
 	if err != nil {
 		err = fmt.Errorf("ReadMsg: %v", err)

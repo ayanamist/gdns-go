@@ -94,14 +94,14 @@ func (h *MyHandler) determineRoute(domain string) (u []Upstream) {
 		u = h.upstreamMap[""]
 	}
 	if avoidLoop {
-		new := []Upstream{}
+		ups := []Upstream{}
 		for _, s := range u {
 			if _, ok = s.(*GoogleHttpsUpstream); !ok {
-				new = append(new, s)
+				ups = append(ups, s)
 			}
 		}
-		if len(new) > 0 {
-			u = new
+		if len(ups) > 0 {
+			u = ups
 		} else {
 			u = []Upstream{fallbackUpstream}
 		}

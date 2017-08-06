@@ -110,17 +110,8 @@ func (h *MyHandler) determineRoute(domain string) (u []Upstream) {
 }
 
 func (h *MyHandler) ServeDNS(w dns.ResponseWriter, reqMsg *dns.Msg) {
-	var addr net.IP
-	remoteHost, _, err := net.SplitHostPort(w.RemoteAddr().String())
-	if err == nil {
-		addr = net.ParseIP(remoteHost)
-		if addr != nil && addr.IsLoopback() {
-			addr = nil
-		}
-	}
-	if addr == nil {
-		addr = myIP.GetIP()
-	}
+	var err error
+	addr := myIP.GetIP()
 	if addr != nil && !addr.IsLoopback() {
 		appendEdns0Subnet(reqMsg, addr)
 	}

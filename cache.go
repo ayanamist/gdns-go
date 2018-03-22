@@ -23,6 +23,9 @@ func questionKey(q dns.Question) string {
 }
 
 func (d *DNSCache) Put(q dns.Question, m *dns.Msg) {
+	if d.cache.Capacity() == 0 {
+		return
+	}
 	var minTTL uint32 = 0xffffffff
 	for _, rr := range m.Answer {
 		ttl := rr.Header().Ttl
@@ -36,7 +39,7 @@ func (d *DNSCache) Put(q dns.Question, m *dns.Msg) {
 
 func (d *DNSCache) Get(q dns.Question) *dns.Msg {
 	v, found := d.cache.GetNotStale(questionKey(q))
-	if found {
+	if found && v != nil {
 		return v.(*dns.Msg).Copy()
 	} else {
 		return nil

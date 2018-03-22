@@ -38,8 +38,8 @@ func (d *DNSCache) Put(q dns.Question, m *dns.Msg) {
 }
 
 func (d *DNSCache) Get(q dns.Question) *dns.Msg {
-	v, found := d.cache.GetNotStale(questionKey(q))
-	if found && v != nil {
+	v, _ := d.cache.GetNotStale(questionKey(q))
+	if v != nil {
 		return v.(*dns.Msg).Copy()
 	} else {
 		return nil

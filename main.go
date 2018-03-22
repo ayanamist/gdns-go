@@ -288,9 +288,9 @@ func main() {
 		listenAddr = config.Listen
 	}
 
-	cacheSize := config.CacheSize
-	if cacheSize == 0 {
-		cacheSize = 1000
+	var cacheSize uint32 = 1000
+	if config.CacheSize != nil {
+		cacheSize = *config.CacheSize
 	}
 	dnsCache = NewDNSCache(cacheSize)
 	server := &dns.Server{

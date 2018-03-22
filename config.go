@@ -11,7 +11,7 @@ type Config struct {
 	Proxy           string            `json:"proxy"`
 	MyIP            string            `json:"myip"`
 	Mapping         map[string]string `json:"mapping"`
-	CacheSize       uint32            `json:"cache_size"`
+	CacheSize       *uint32           `json:"cache_size"`
 	QueryTimeoutSec uint32            `json:"query_timeout_sec"`
 }
 

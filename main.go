@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -22,6 +23,7 @@ const (
 
 var (
 	confFile = flag.String("conf", "config.json", "Specify config json path")
+	daemon   = flag.Bool("d", false, "Run as daemon")
 
 	myIP                *MyIP
 	dnsCache            *DNSCache
@@ -181,6 +183,27 @@ func init() {
 
 func main() {
 	flag.Parse()
+
+	if *daemon {
+		newArgs := make([]string, len(os.Args)-1)
+		for i, j := 0, 0; i < len(os.Args); i++ {
+			if os.Args[i] != "-d" {
+				newArgs[j] = os.Args[i]
+				j++
+			}
+		}
+		cmd := exec.Command(newArgs[0], newArgs[1:]...)
+		cmd.Dir, _ = os.Getwd()
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		cmd.Env = os.Environ()
+		cmd.SysProcAttr = daemonSysprocAttr
+		if err := cmd.Start(); err != nil {
+			log.Fatalf("run as daemon error: %v", err)
+		}
+		return
+	}
+
 	config, err := GetConfigFromFile(*confFile)
 	if err != nil {
 		log.Fatalln(err)

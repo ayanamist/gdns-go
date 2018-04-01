@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"log"
+	"math/rand"
 	"net"
 	"net/http"
 	"sync"
@@ -85,7 +86,7 @@ func (m *MyIP) StartTaobaoIPLoop(cb func(oldIP, newIP net.IP)) {
 					oldIP = newIP
 				}
 			}
-			time.Sleep(1 * time.Second)
+			time.Sleep(time.Duration(60+rand.Intn(60)) * time.Second)
 		}
 	}()
 }

@@ -1,50 +1,43 @@
 package main
 
 import (
-	"crypto/tls"
-	"errors"
 	"flag"
 	"log"
 	"net"
-	"net/http"
-	"net/url"
 	"os"
-	"os/exec"
-	"strings"
 	"time"
 
 	"github.com/miekg/dns"
-	"golang.org/x/net/http2"
 )
 
 const (
-	AliDNS = "223.5.5.5:53"
+	googleDoHUrl = "https://dns.google/dns-query"
 )
 
 var (
-	confFile = flag.String("conf", "config.json", "Specify config json path")
-	daemon   = flag.Bool("d", false, "Run as daemon")
+	dnsQueryTimeoutSec uint
+	ednsClientSubnet   string
+	listenAddr         string
+	proxy              string
 
-	myIP                *MyIP
-	dnsCache            *DNSCache
-	possibleLoopDomains = []string{GoogleDnsHttpsDomain}
-	dnsQueryTimeoutSec  time.Duration
-	fallbackUpstream    *TcpUdpUpstream
+	dnsQueryTimeout time.Duration
+
+	ednsClientAddr net.IP
+	ednsClientMask uint8
 )
 
-type MyHandler struct {
-	upstreamMap map[string][]Upstream
-	cache       *DNSCache
-}
-
-func appendEdns0Subnet(m *dns.Msg, addr net.IP) {
+func appendEdns0Subnet(m *dns.Msg, addr net.IP, mask uint8) {
 	newOpt := true
 	var o *dns.OPT
 	for _, v := range m.Extra {
 		if v.Header().Rrtype == dns.TypeOPT {
 			o = v.(*dns.OPT)
 			newOpt = false
-			break
+			for _, option := range o.Option {
+				if option.Option() == dns.EDNS0SUBNET {
+					return
+				}
+			}
 		}
 	}
 	if o == nil {
@@ -56,12 +49,11 @@ func appendEdns0Subnet(m *dns.Msg, addr net.IP) {
 	e.Code = dns.EDNS0SUBNET
 	e.SourceScope = 0
 	e.Address = addr
+	e.SourceNetmask = mask
 	if e.Address.To4() == nil {
 		e.Family = 2 // IP6
-		e.SourceNetmask = net.IPv6len * 8
 	} else {
 		e.Family = 1 // IP4
-		e.SourceNetmask = net.IPv4len * 8
 	}
 	o.Option = append(o.Option, e)
 	if newOpt {
@@ -69,265 +61,45 @@ func appendEdns0Subnet(m *dns.Msg, addr net.IP) {
 	}
 }
 
-func (h *MyHandler) determineRoute(domain string) (u []Upstream) {
-	for domain != "" && domain[len(domain)-1] == '.' {
-		domain = domain[:len(domain)-1]
-	}
-	avoidLoop := false
-	var ok bool
-	for domain != "" {
-		for _, d := range possibleLoopDomains {
-			if domain == d {
-				avoidLoop = true
-				break
-			}
-		}
-		u, ok = h.upstreamMap[domain]
-		if ok {
-			break
-		}
-		idx := strings.IndexByte(domain, '.')
-		if idx < 0 {
-			break
-		}
-		domain = domain[idx+1:]
-	}
-	if len(u) == 0 {
-		u = h.upstreamMap[""]
-	}
-	if avoidLoop {
-		ups := []Upstream{}
-		for _, s := range u {
-			if _, ok = s.(*GoogleHttpsUpstream); !ok {
-				ups = append(ups, s)
-			}
-		}
-		if len(ups) > 0 {
-			u = ups
-		} else {
-			u = []Upstream{fallbackUpstream}
-		}
-	}
-	return
-}
-
-func (h *MyHandler) ServeDNS(w dns.ResponseWriter, reqMsg *dns.Msg) {
-	var err error
-	addr := myIP.GetIP()
-	if addr != nil && !addr.IsLoopback() {
-		appendEdns0Subnet(reqMsg, addr)
-	}
-
-	type chanResp struct {
-		m   *dns.Msg
-		err error
-	}
-	var respMsg *dns.Msg
-	allQuestions := reqMsg.Question
-	for qi, q := range allQuestions {
-		typ, ok := dns.TypeToString[q.Qtype]
-		if !ok {
-			typ = "UnknownType"
-		}
-
-		respMsg = h.cache.Get(q)
-		if respMsg == nil {
-			up := h.determineRoute(q.Name)
-
-			for i, u := range up {
-				m := reqMsg.Copy()
-				m.Question = allQuestions[qi : qi+1]
-
-				log.Printf("%s#%d %d/%d query %v, type=%s => %s(%d)", w.RemoteAddr(), m.Id, qi+1, len(allQuestions), q.Name, typ, u.Name(), i)
-				ch := make(chan chanResp)
-				go func(i int, u Upstream) {
-					start := time.Now()
-					respMsg, err := u.Exchange(m)
-					log.Printf("%s#%d %d/%d %s(%d) rtt=%dms, err=%v", w.RemoteAddr(), m.Id, qi+1, len(allQuestions), u.Name(), i, time.Since(start)/1e6, err)
-					ch <- chanResp{respMsg, err}
-					close(ch)
-				}(i, u)
-				select {
-				case resp := <-ch:
-					respMsg, err = resp.m, resp.err
-				case <-time.After(dnsQueryTimeoutSec):
-					go func() {
-						<-ch
-					}()
-					respMsg, err = nil, errors.New("single timeout")
-				}
-				if err == nil {
-					break
-				}
-			}
-
-			if respMsg != nil {
-				h.cache.Put(q, respMsg)
-			}
-		} else {
-			respMsg.Id = reqMsg.Id
-			log.Printf("%s#%d %d/%d query %v, type=%s => cache", w.RemoteAddr(), respMsg.Id, qi+1, len(allQuestions), q.Name, typ)
-		}
-
-		if respMsg != nil {
-			if err := w.WriteMsg(respMsg); err != nil {
-				log.Printf("WriteMsg: %v", err)
-			}
-		}
-	}
-}
-
-func init() {
-	log.SetOutput(os.Stdout)
-}
-
 func main() {
+	log.SetOutput(os.Stdout)
+
+	flag.UintVar(&dnsQueryTimeoutSec, "t", 6, "dns query timeout in second")
+	flag.StringVar(&ednsClientSubnet, "e", "", "edns client subnet")
+	flag.StringVar(&listenAddr, "l", "0.0.0.0:5300", "listen address")
+	flag.StringVar(&proxy, "x", "", "proxy address")
 	flag.Parse()
-
-	if *daemon {
-		newArgs := make([]string, len(os.Args)-1)
-		for i, j := 0, 0; i < len(os.Args); i++ {
-			if os.Args[i] != "-d" {
-				newArgs[j] = os.Args[i]
-				j++
-			}
-		}
-		cmd := exec.Command(newArgs[0], newArgs[1:]...)
-		cmd.Dir, _ = os.Getwd()
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		cmd.Env = os.Environ()
-		cmd.SysProcAttr = daemonSysprocAttr
-		if err := cmd.Start(); err != nil {
-			log.Fatalf("run as daemon error: %v", err)
-		}
-		return
+	if proxy == "" {
+		log.Fatalf("-x required")
 	}
-
-	config, err := GetConfigFromFile(*confFile)
-	if err != nil {
-		log.Fatalln(err)
-	}
-
-	dnsQueryTimeoutSec = time.Duration(config.QueryTimeoutSec) * time.Second
-	if dnsQueryTimeoutSec == 0 {
-		dnsQueryTimeoutSec = 5 * time.Second
-	}
-
-	fallbackUpstream = &TcpUdpUpstream{
-		NameServer: AliDNS,
-		Network:    "udp",
-		Dial: (&net.Dialer{
-			Timeout: dnsQueryTimeoutSec,
-		}).Dial,
-	}
-
-	myIP = new(MyIP)
-	if config.MyIP == "" {
-		myIP.Client = &http.Client{
-			Transport: &http.Transport{
-				Dial: (&net.Dialer{
-					Timeout: 3 * time.Second,
-				}).Dial,
-				ResponseHeaderTimeout: 30 * time.Second,
-				IdleConnTimeout:       30 * time.Second,
-			},
-			Timeout: 30 * time.Second,
-		}
-		myIP.SetIP(net.IP{127, 0, 0, 1})
-		myIP.StartTaobaoIPLoop(func(oldIP, newIP net.IP) {
-			dnsCache.Purge()
-		})
-	} else {
-		myIP.SetIP(net.ParseIP(config.MyIP))
-	}
-
-	dial := (&net.Dialer{
-		Timeout: 5 * time.Second,
-	}).Dial
-	if config.Proxy != "" {
-		u, err := url.Parse(config.Proxy)
+	if ednsClientSubnet != "" {
+		_, ipNet, err := net.ParseCIDR(ednsClientSubnet)
 		if err != nil {
-			log.Fatalf("invalid proxy url %s: %v", config.Proxy, err)
+			log.Fatalf("invalid edns client subnet %s: %v", ednsClientSubnet, err)
 		}
-		if dial, err = NewDialFromURL(u); err != nil {
-			log.Fatalln(err)
+		ednsClientAddr = ipNet.IP
+		ones, _ := ipNet.Mask.Size()
+		if ones == 0 {
+			log.Fatalf("invalid edns client subnet %s: the mask is not in the canonical form--ones followed by zeros", ednsClientSubnet)
 		}
-		domain := strings.SplitN(u.Host, ":", 2)[0]
-		if net.ParseIP(domain) == nil {
-			possibleLoopDomains = append(possibleLoopDomains, domain)
-		}
-	}
-	defaultGoogleUpstream := &GoogleHttpsUpstream{
-		Client: &http.Client{
-			Transport: &http2.Transport{
-				DialTLS: func(network, addr string, cfg *tls.Config) (net.Conn, error) {
-					conn, err := dial(network, addr)
-					if err != nil {
-						return nil, err
-					}
-					return tls.Client(conn, cfg), nil
-				},
-			},
-			Timeout: 2 * time.Second,
-		},
+		ednsClientMask = uint8(ones)
 	}
 
-	upstreamMap := make(map[string][]Upstream)
-	for k, v := range config.Mapping {
-		upstreams := []Upstream{}
-		for _, v := range strings.Split(v, ",") {
-			var upstream Upstream
-			if v == "default" {
-				upstream = defaultGoogleUpstream
-			} else {
-				if _, _, err := net.SplitHostPort(v); err != nil {
-					if strings.Contains(err.Error(), "missing port in address") {
-						v += ":53"
-					} else {
-						log.Fatalf("dns server %s invalid: %v", v, err)
-					}
-				}
-				upstream = &TcpUdpUpstream{
-					NameServer: v,
-					Network:    "udp",
-					Dial: (&net.Dialer{
-						Timeout: dnsQueryTimeoutSec,
-					}).Dial,
-				}
-			}
-			upstreams = append(upstreams, upstream)
+	dnsQueryTimeout = time.Duration(dnsQueryTimeoutSec) * time.Second
+
+	upstream, err := newUpstreamHTTPS(googleDoHUrl)
+	if err != nil {
+		log.Fatalf("unexpect newUpstreamHTTPS error: %v", err)
+	}
+
+	if err := dns.ListenAndServe(listenAddr, "udp", dns.HandlerFunc(func(w dns.ResponseWriter, r *dns.Msg) {
+		m, err := upstream.Exchange(r)
+		if err != nil {
+			dns.HandleFailed(w, r)
+		} else {
+			_ = w.WriteMsg(m)
 		}
-		if len(upstreams) > 0 {
-			upstreamMap[k] = upstreams
-		}
-	}
-	if _, ok := upstreamMap[""]; !ok {
-		upstreamMap[""] = []Upstream{defaultGoogleUpstream}
-	}
-
-	listenAddr := "127.0.0.1:53"
-	if config.Listen != "" {
-		listenAddr = config.Listen
-	}
-
-	var cacheSize uint32 = 1000
-	if config.CacheSize != nil {
-		cacheSize = *config.CacheSize
-	}
-	dnsCache = NewDNSCache(cacheSize)
-	server := &dns.Server{
-		Addr: listenAddr,
-		Net:  "udp",
-		Handler: &MyHandler{
-			upstreamMap: upstreamMap,
-			cache:       dnsCache,
-		},
-		TsigSecret: nil,
-	}
-
-	log.Printf("try to listen on %s", listenAddr)
-	if err := server.ListenAndServe(); err != nil {
-		log.Fatalf("Failed to setup the server: %v", err)
+	})); err != nil {
+		log.Fatalf("listen %s error: %v", listenAddr, err)
 	}
 }
